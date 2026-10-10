@@ -1,0 +1,4 @@
+# Тесты и отчёты; coverage учитывает Python subprocess и os._exit.
+pytest==9.1.1
+pytest-cov==7.1.0
+pytest-html==4.2.0
