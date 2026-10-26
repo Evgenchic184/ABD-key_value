@@ -1,1 +1,9 @@
-.venv
+.venv/
+__pycache__/
+*.py[cod]
+/data/
+.coverage*
+.pytest_cache/
+.ruff_cache/
+/docs/testing/reports/
+/reports/

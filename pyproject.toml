@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["kvdb"]
+relative_files = true
+parallel = true
+patch = ["subprocess", "_exit"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
