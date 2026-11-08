@@ -23,3 +23,21 @@ def ensure_directory(path: Path) -> None:
     # Существующий каталог мог остаться после сбоя между mkdir и fsync.
     # Повторное открытие должно закрепить и такую запись в родителе.
     sync_directory(path.parent)
+
+
+class DirectoryLock:
+    """Advisory POSIX lock held for the entire server lifespan."""
+
+    def __init__(self, path: Path):
+        import fcntl
+
+        ensure_directory(path)
+        self.stream = (path / ".lock").open("a+b")
+        try:
+            fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BaseException:
+            self.stream.close()
+            raise RuntimeError(f"Database directory is already in use: {path}") from None
+
+    def close(self):
+        self.stream.close()

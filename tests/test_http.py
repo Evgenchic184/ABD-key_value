@@ -151,7 +151,7 @@ def test_uvicorn_entrypoint_serves_and_persists(tmp_path):
         stderr=subprocess.DEVNULL,
     )
     try:
-        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=1) as http:
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=1, trust_env=False) as http:
             response = None
             for _ in range(100):
                 try:

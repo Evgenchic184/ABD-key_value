@@ -47,6 +47,23 @@ class FileStorage(SnapshotStorage):
                 raise TypeError("Снимок требует строковые ключи и bytes-значения")
             encoded[key] = base64.b64encode(value).decode("ascii")
         payload = json.dumps({"version": 1, "data": encoded}, ensure_ascii=True)
+        self._save_payload(payload)
+
+    def load_state(self):
+        """Load a v2 replication snapshot, retaining the legacy load contract."""
+        from kvdb.replication.models import SnapshotState
+
+        return SnapshotState.parse(json.loads(self.path.read_text(encoding="utf-8")))
+
+    def save_state(self, state) -> None:
+        """Persist data and replication metadata as one atomic file."""
+        from kvdb.replication.models import SnapshotState
+
+        raw = state.wire()
+        SnapshotState.parse(raw)
+        self._save_payload(json.dumps(raw, ensure_ascii=True))
+
+    def _save_payload(self, payload: str) -> None:
         ensure_directory(self.path.parent)
         temporary = None
         try:
