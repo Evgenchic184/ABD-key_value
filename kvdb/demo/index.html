@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KVDB · Интерфейс базы</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <div class="eyebrow">KVDB / DATABASE CONSOLE</div>
+          <h1>Интерфейс базы</h1>
+          <div class="muted">
+            Один ведущий · асинхронный WAL · независимые реплики
+          </div>
+        </div>
+        <div>
+          <span class="badge" id="connection">Подключение к базе…</span>
+          <span class="badge" id="run">—</span>
+        </div>
+      </header>
+      <section class="nodes" id="nodes"></section>
+      <section class="box values-box">
+        <h2>Счётчики пользователей на узлах</h2>
+        <p class="meta muted">
+          Постоянные ключи user-1, user-2, user-3 хранят номер цикла. На паузе
+          синхронизации значение реплики застынет, а ведущий продолжит считать.
+          Значения опрашиваются раз в секунду.
+        </p>
+        <div class="table-wrap">
+          <table class="values-table">
+            <thead id="values-head"></thead>
+            <tbody id="values-body"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="box manual-box">
+        <h2>Запрос к базе</h2>
+        <div class="manual-form">
+          <select id="manual-node" aria-label="Узел запроса">
+            <option value="leader">leader</option></select
+          ><input
+            id="manual-key"
+            aria-label="Ключ"
+            placeholder="Ключ"
+            value="example"
+          /><input
+            id="manual-value"
+            aria-label="Значение UTF-8"
+            placeholder="Значение UTF-8"
+            value="hello"
+          /><button data-method="PUT">PUT</button
+          ><button data-method="GET">GET</button
+          ><button data-method="DELETE">DELETE</button>
+        </div>
+        <div id="manual-result" class="meta muted" role="status">
+          Значения вводятся и отображаются как текст; API базы по-прежнему
+          использует Base64.
+        </div>
+      </section>
+      <div class="controls">
+        <button class="primary" data-action="start">
+          ▶ Запустить нагрузку</button
+        ><button data-action="pause">Ⅱ Пауза нагрузки</button
+        ><button data-action="flush">Снимок + очистить WAL лидера</button
+        ><button data-action="check">Проверить сходимость</button>
+      </div>
+      <div class="status-line">
+        <span id="workload">Ожидание инициализации</span> ·
+        <span id="verification">Проверка не запускалась</span>
+        <span id="notice" role="status"></span>
+      </div>
+      <section class="middle">
+        <div class="box">
+          <h2>Позиции WAL</h2>
+          <svg
+            class="chart"
+            id="chart"
+            viewBox="0 0 800 215"
+            role="img"
+            aria-label="Позиции WAL узлов за последние пять минут"
+          ></svg>
+          <div class="legend" id="legend"></div>
+          <p class="meta muted">
+            Разрыв линии — узел недоступен. Одинаковые позиции при активной
+            записи не заменяют проверку сходимости.
+          </p>
+        </div>
+        <div class="box">
+          <h2>Контрольное чтение</h2>
+          <div class="control-result" id="control">
+            Ожидание первой репликации
+          </div>
+          <div class="meta muted" id="control-meta">
+            Постоянный ключ не удаляется пользователями.
+          </div>
+          <p class="meta muted">
+            Запись идёт только на leader. Чтение — с реплик по кругу, затем с
+            leader при отказе реплик.
+          </p>
+          <div class="meta" id="transfers"></div>
+        </div>
+      </section>
+      <section class="stats" id="stats"></section>
+      <section class="box">
+        <div class="event-head">
+          <h2>Запросы и события</h2>
+          <div class="filters">
+            <select id="user-filter" aria-label="Фильтр пользователя">
+              <option value="">Все пользователи</option></select
+            ><select id="node-filter" aria-label="Фильтр узла">
+              <option value="">Все узлы</option></select
+            ><select id="result-filter" aria-label="Фильтр результата">
+              <option value="">Все результаты</option>
+              <option value="error">Ошибки / неизвестно</option>
+              <option value="ok">Успешные запросы</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Время</th>
+                <th>Пользователь</th>
+                <th>Узел</th>
+                <th>Операция</th>
+                <th>Ключ</th>
+                <th>Статус</th>
+                <th>мс</th>
+                <th>Значение / результат</th>
+              </tr>
+            </thead>
+            <tbody id="events"></tbody>
+          </table>
+        </div>
+      </section>
+      <footer>
+        404 при чтении — корректный ответ «ключ отсутствует». Сразу после
+        изменения реплика может вернуть старое состояние.<br />Ошибка соединения
+        при изменении означает неизвестный результат: автоматического повтора
+        нет. <span id="log"></span>
+      </footer>
+    </main>
+    <script src="/assets/dashboard.js" defer></script>
+  </body>
+</html>

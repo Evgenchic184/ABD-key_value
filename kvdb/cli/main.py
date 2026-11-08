@@ -6,6 +6,7 @@ import shlex
 import sys
 
 from kvdb import FileStorage, FileWAL, KVEngine
+from kvdb._files import DirectoryLock
 
 
 HELP = """Команды:
@@ -22,8 +23,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     args = parser.parse_args(argv)
     db = None
+    directory_lock = None
     status = 0
     try:
+        directory_lock = DirectoryLock(args.data_dir)
         db = KVEngine(FileStorage(args.data_dir / "snapshot.json"), FileWAL(args.data_dir / "wal.bin"))
         if sys.stdin.isatty():
             print(HELP)
@@ -73,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, ValueError, RuntimeError) as exc:
                 print(f"Ошибка закрытия: {exc}", file=sys.stderr)
                 status = 1
+        if directory_lock is not None:
+            directory_lock.close()
     return status
 
 

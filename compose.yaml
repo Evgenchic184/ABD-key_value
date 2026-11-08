@@ -1,0 +1,43 @@
+x-node: &node
+  build: .
+  image: kvdb:lab4
+  init: true
+  stop_grace_period: 15s
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+    interval: 5s
+    timeout: 3s
+    retries: 3
+    start_period: 5s
+
+services:
+  leader:
+    <<: *node
+    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "leader", "--group-id", "lab4"]
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: ["leader-data:/data"]
+  replica1:
+    <<: *node
+    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "replica", "--group-id", "lab4", "--leader-url", "http://leader:8000"]
+    ports: ["127.0.0.1:8001:8000"]
+    volumes: ["replica1-data:/data"]
+  replica2:
+    <<: *node
+    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "replica", "--group-id", "lab4", "--leader-url", "http://leader:8000"]
+    ports: ["127.0.0.1:8002:8000"]
+    volumes: ["replica2-data:/data"]
+  web:
+    <<: *node
+    command: ["python", "-m", "kvdb.web", "--host", "0.0.0.0", "--leader-url", "http://leader:8000", "--replica-urls", "http://replica1:8000", "http://replica2:8000"]
+    ports: ["127.0.0.1:8080:8080"]
+    volumes: ["./reports/demo:/app/reports/demo"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  leader-data:
+  replica1-data:
+  replica2-data:
