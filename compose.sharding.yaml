@@ -1,0 +1,44 @@
+x-node: &node
+  build: .
+  image: kvdb:lab5
+  init: true
+  stop_grace_period: 15s
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+    interval: 5s
+    timeout: 3s
+    retries: 3
+    start_period: 5s
+
+services:
+  shard-a-leader:
+    <<: *node
+    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "leader", "--group-id", "shard-a"]
+    ports: ["127.0.0.1:8100:8000"]
+    volumes: ["shard-a-leader-data:/data"]
+  shard-a-replica:
+    <<: *node
+    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "replica", "--group-id", "shard-a", "--leader-url", "http://shard-a-leader:8000"]
+    ports: ["127.0.0.1:8101:8000"]
+    volumes: ["shard-a-replica-data:/data"]
+  shard-b-leader:
+    <<: *node
+    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "leader", "--group-id", "shard-b"]
+    ports: ["127.0.0.1:8200:8000"]
+    volumes: ["shard-b-leader-data:/data"]
+  shard-b-replica:
+    <<: *node
+    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "replica", "--group-id", "shard-b", "--leader-url", "http://shard-b-leader:8000"]
+    ports: ["127.0.0.1:8201:8000"]
+    volumes: ["shard-b-replica-data:/data"]
+  router:
+    <<: *node
+    command: ["python", "-m", "kvdb.sharding", "--host", "0.0.0.0", "--port", "8000", "--config", "/app/shards.json"]
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: ["./deploy/shards.compose.json:/app/shards.json:ro"]
+
+volumes:
+  shard-a-leader-data:
+  shard-a-replica-data:
+  shard-b-leader-data:
+  shard-b-replica-data:

@@ -1,0 +1,17 @@
+{
+  "virtual_nodes": 128,
+  "timeout": 2.0,
+  "reads": "replica",
+  "shards": [
+    {
+      "id": "shard-a",
+      "leader": "http://127.0.0.1:8100",
+      "replicas": ["http://127.0.0.1:8101"]
+    },
+    {
+      "id": "shard-b",
+      "leader": "http://127.0.0.1:8200",
+      "replicas": ["http://127.0.0.1:8201"]
+    }
+  ]
+}
