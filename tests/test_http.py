@@ -33,6 +33,8 @@ def test_health(client):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+    assert client.get("/internal/replication/status").status_code == 403
+    assert client.post("/internal/replication/pause").status_code == 403
 
 
 def test_crud_and_missing_key(client):

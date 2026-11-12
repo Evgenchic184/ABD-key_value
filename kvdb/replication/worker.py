@@ -97,7 +97,8 @@ class ReplicationWorker:
         expected = position + 1
         for item in operations:
             operation = Operation.parse(item)
-            if operation.seq != expected or operation.seq > raw["last_seq"]:
+            if (operation.seq != expected or operation.seq > raw["last_seq"]
+                    or operation.epoch != raw.get("epoch", 0)):
                 raise ValueError("invalid batch sequence")
             expected += 1
         if not operations and raw["last_seq"] != position:
@@ -106,7 +107,7 @@ class ReplicationWorker:
         for item in operations:
             if self.stop_event.is_set():
                 return False
-            self.engine.apply_replication(item)
+            self.engine.apply_replication(item, epoch=raw.get("epoch"))
             with self.lock:
                 self.info["wal_operations"] += 1
                 self.info["last_transfer"] = "wal"

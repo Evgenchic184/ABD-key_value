@@ -2,7 +2,8 @@ const $ = (s) => document.querySelector(s),
   colors = ["#65e0b5", "#7bb6ff", "#ffd284"];
 let cursor = 0,
   events = [],
-  lastRun = null;
+  lastRun = null,
+  latestState = null;
 function el(tag, text, cls) {
   const n = document.createElement(tag);
   if (text !== undefined) n.textContent = text;
@@ -12,9 +13,32 @@ function el(tag, text, cls) {
 function timeText(t) {
   return t ? new Date(t).toLocaleTimeString("ru-RU") : "—";
 }
-function option(select, value) {
-  if (!Array.from(select.options).some((o) => o.value === value))
-    select.add(new Option(value, value));
+function option(select, value, label = value) {
+  const existing = Array.from(select.options).find((o) => o.value === value);
+  if (existing) existing.textContent = label;
+  else select.add(new Option(label, value));
+}
+const roleLabels = {
+  leader: "Лидер",
+  replica: "Реплика",
+  standalone: "Автономный узел",
+};
+function requestTarget(event) {
+  if (event.kind !== "request") return event.node ?? "—";
+  const target = event.target === "leader" ? "По роли лидер" : "По имени";
+  const role = roleLabels[event.node_role];
+  return `${target} → ${event.node ?? "не определён"}${role ? ` (${role})` : ""}`;
+}
+function updateManualRoute() {
+  const byRole = $("#manual-target").value === "leader";
+  $("#manual-node").hidden = byRole;
+  const node = byRole ? latestState?.leader_node : $("#manual-node").value;
+  const info = latestState?.nodes[node];
+  const url = latestState?.node_urls?.[node];
+  const route = byRole ? "По роли лидер" : "По имени контейнера";
+  const role = roleLabels[info?.role];
+  $("#manual-route").textContent =
+    `${route} → ${node || "ожидание выбора"}${role ? ` (${role})` : ""}${url ? ` · ${url}` : ""}${!byRole && info?.role === "replica" ? " · PUT/DELETE вернут 403" : ""}`;
 }
 function decoded(value) {
   if (value === null || value === undefined) return "—";
@@ -73,10 +97,7 @@ async function syncAction(node, action) {
   }
 }
 function renderValues(state) {
-  const names = [
-    "leader",
-    ...Object.keys(state.history).filter((n) => n !== "leader"),
-  ];
+  const names = Object.keys(state.history).sort();
   const heading = el("tr");
   heading.append(el("th", "Ключ"));
   names.forEach((n) => heading.append(el("th", n)));
@@ -85,16 +106,17 @@ function renderValues(state) {
   for (const key of state.user_keys ?? []) {
     const row = el("tr");
     row.append(el("td", key));
-    const lead = state.values?.leader?.[key];
+    const lead = state.values?.[state.leader_node]?.[key];
     const leadText = lead?.status === 200 ? decoded(lead.value) : null;
     for (const name of names) {
       const sample = state.values?.[name]?.[key],
         node = state.nodes[name];
       const text = sample?.status === 200 ? decoded(sample.value) : "—";
-      const stale = !node?.available || !state.nodes.leader?.available;
+      const stale =
+        !node?.available || !state.nodes[state.leader_node]?.available;
       const differs =
         !stale &&
-        name !== "leader" &&
+        name !== state.leader_node &&
         lead?.status === 200 &&
         (sample?.status !== 200 || text !== leadText);
       const cell = el("td");
@@ -129,13 +151,18 @@ function renderNodes(nodes) {
   $("#nodes").replaceChildren();
   $("#transfers").replaceChildren();
   Object.entries(nodes)
-    .sort(([a], [b]) =>
-      a === "leader" ? -1 : b === "leader" ? 1 : a.localeCompare(b),
-    )
+    .sort(([a], [b]) => a.localeCompare(b))
     .forEach(([name, n]) => {
       const card = el("article", undefined, "card"),
         head = el("div", undefined, "node-head");
-      head.append(el("strong", name));
+      const identity = el("div", undefined, "node-identity");
+      const role = el(
+        "span",
+        `${roleLabels[n.role] ?? "Роль неизвестна"}${!n.available && roleLabels[n.role] ? " · последняя роль" : ""}`,
+        `node-role node-role-${n.available ? n.role : "unknown"}`,
+      );
+      identity.append(el("strong", name), role);
+      head.append(identity);
       const status = el(
         "span",
         undefined,
@@ -155,20 +182,24 @@ function renderNodes(nodes) {
       );
       const stale = n.display_lag_stale || n.lag_stale;
       const lines = [
-        `Роль: ${n.role ?? "—"} · состояние: ${n.state ?? "—"}`,
+        `Состояние: ${n.state ?? "—"}`,
         `Отставание: ${n.display_lag ?? "—"}${stale ? " (оценка устарела)" : ""}`,
         `Последний ответ: ${timeText(n.last_success)}`,
+        `ZooKeeper: ${n.coordination ?? "статический режим"} · эпоха: ${n.epoch ?? 0}`,
+        `Ведущий: ${n.leader_id ?? "—"} · запись: ${(n.writable ?? n.role === "leader") ? "разрешена" : "недоступна"}`,
       ];
       if (n.last_error || n.error) lines.push(n.last_error || n.error);
       for (const line of lines) card.append(el("div", line, "meta muted"));
       card.append(
         el(
           "div",
-          `Отставание WAL: ${n.display_lag ?? "—"} операций`,
+          n.epoch_mismatch
+            ? "Ожидается снимок новой эпохи"
+            : `Отставание WAL: ${n.display_lag ?? "—"} операций`,
           "lag-number " + (n.display_lag > 0 ? "warn" : "ok"),
         ),
       );
-      if (name !== "leader") {
+      if (n.role === "replica") {
         const button = el(
           "button",
           n.paused
@@ -188,9 +219,13 @@ function renderNodes(nodes) {
           );
       }
       $("#nodes").append(card);
-      option($("#manual-node"), name);
+      option(
+        $("#manual-node"),
+        name,
+        `${name} · ${roleLabels[n.role] ?? "роль неизвестна"}`,
+      );
       option($("#node-filter"), name);
-      if (name !== "leader")
+      if (n.role === "replica")
         $("#transfers").append(
           el(
             "div",
@@ -289,7 +324,7 @@ function renderEvents() {
       [
         timeText(e.time),
         e.user ?? "система",
-        e.node ?? "—",
+        requestTarget(e),
         e.method ?? "—",
         e.key ?? "—",
         String(status),
@@ -338,7 +373,7 @@ async function poll() {
     events.push(...s.events);
     events = events.slice(-2000);
     cursor = s.cursor;
-    $("#run").textContent = "run " + s.run_id;
+    $("#run").textContent = `ведущий ${s.leader_node ?? "—"} · run ${s.run_id}`;
     $("#connection").textContent = "● интерфейс подключён";
     $("#connection").className = "badge ok";
     $("#workload").textContent = !s.initialized
@@ -355,7 +390,9 @@ async function poll() {
           ? "bad"
           : "muted";
     $("#log").textContent = "Журнал: " + s.log_path;
+    latestState = s;
     renderNodes(s.nodes);
+    updateManualRoute();
     renderValues(s);
     chart(s.history);
     if (s.control) {
@@ -423,13 +460,14 @@ document.querySelectorAll("[data-method]").forEach((button) =>
     button.disabled = true;
     try {
       const result = await apiPost("/api/kv", {
-        node: $("#manual-node").value,
+        target: $("#manual-target").value,
+        node: $("#manual-node").value || null,
         method: button.dataset.method,
         key: $("#manual-key").value,
         value: $("#manual-value").value,
       });
       $("#manual-result").textContent =
-        `${result.method} ${result.key} · ${result.node} · ${result.status ?? "NETWORK"} · ${eventDetails(result)}`;
+        `${result.method} ${result.key} · ${requestTarget(result)}${result.url ? ` · ${result.url}` : ""} · ${result.status ?? "NETWORK"} · ${eventDetails(result)}`;
       $("#manual-result").className = "meta " + (result.ok ? "ok" : "bad");
     } catch (error) {
       $("#manual-result").textContent = error.message;
@@ -438,4 +476,6 @@ document.querySelectorAll("[data-method]").forEach((button) =>
     }
   }),
 );
+$("#manual-target").addEventListener("change", updateManualRoute);
+$("#manual-node").addEventListener("change", updateManualRoute);
 poll();

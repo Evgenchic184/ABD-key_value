@@ -19,10 +19,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--leader-url")
     parser.add_argument("--replication-interval", type=float, default=0.5)
     parser.add_argument("--replication-timeout", type=float, default=2.0)
+    parser.add_argument("--zookeeper-hosts")
+    parser.add_argument("--node-id")
+    parser.add_argument("--advertise-url")
+    parser.add_argument("--session-timeout", type=float, default=6.0)
     args = parser.parse_args(argv)
     try:
         config = ReplicationConfig(args.role, args.group_id, args.leader_url,
-                                   args.replication_interval, args.replication_timeout)
+                                   args.replication_interval, args.replication_timeout,
+                                   args.zookeeper_hosts, args.node_id, args.advertise_url, args.session_timeout)
     except ValueError as exc:
         parser.error(str(exc))
     uvicorn.run(create_app(args.data_dir, config), host=args.host, port=args.port)

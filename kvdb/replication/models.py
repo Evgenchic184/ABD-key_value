@@ -23,6 +23,7 @@ class Operation:
     op: Literal["set", "delete"]
     key: str
     value: bytes | None = None
+    epoch: int = 0
 
     @classmethod
     def parse(cls, raw: dict) -> "Operation":
@@ -31,14 +32,17 @@ class Operation:
         seq = integer(raw.get("seq"), "seq")
         op, key = raw.get("op"), raw.get("key")
         expected = {"seq", "op", "key", "value"} if op == "set" else {"seq", "op", "key"}
-        if seq == 0 or op not in ("set", "delete") or not isinstance(key, str) or set(raw) != expected:
+        if seq == 0 or op not in ("set", "delete") or not isinstance(key, str) or set(raw) - {"epoch"} != expected:
             raise ValueError("invalid operation")
-        return cls(seq, op, key, decode(raw["value"]) if op == "set" else None)
+        return cls(seq, op, key, decode(raw["value"]) if op == "set" else None,
+                   integer(raw.get("epoch", 0), "epoch"))
 
     def wire(self) -> dict:
         raw = {"seq": self.seq, "op": self.op, "key": self.key}
         if self.op == "set":
             raw["value"] = base64.b64encode(self.value).decode("ascii")
+        if self.epoch:
+            raw["epoch"] = self.epoch
         return raw
 
 
@@ -48,10 +52,12 @@ class SnapshotState:
     last_seq: int
     initialized: bool
     data: dict[str, bytes]
+    epoch: int = 0
 
     @classmethod
     def parse(cls, raw: dict) -> "SnapshotState":
-        if not isinstance(raw, dict) or set(raw) != {"version", "group_id", "last_seq", "initialized", "data"}:
+        fields = {"version", "group_id", "last_seq", "initialized", "data"}
+        if not isinstance(raw, dict) or set(raw) - {"epoch"} != fields:
             raise ValueError("invalid cluster snapshot")
         if type(raw["version"]) is not int or raw["version"] != 2:
             raise ValueError("cluster snapshot version must be 2")
@@ -65,12 +71,16 @@ class SnapshotState:
         data = {key: decode(value) for key, value in raw["data"].items()}
         if not raw["initialized"] and (seq or data):
             raise ValueError("uninitialized snapshot must be empty")
-        return cls(raw["group_id"], seq, raw["initialized"], data)
+        return cls(raw["group_id"], seq, raw["initialized"], data, integer(raw.get("epoch", 0), "epoch"))
 
     def wire(self) -> dict:
-        return {"version": 2, "group_id": self.group_id, "last_seq": self.last_seq,
+        raw = {"version": 2, "group_id": self.group_id, "last_seq": self.last_seq,
                 "initialized": self.initialized,
                 "data": {key: base64.b64encode(value).decode("ascii") for key, value in self.data.items()}}
+
+        if self.epoch:
+            raw["epoch"] = self.epoch
+        return raw
 
 
 class ReadOnlyError(PermissionError):

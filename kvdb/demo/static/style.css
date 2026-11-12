@@ -75,10 +75,41 @@ h2 {
 .node-head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 12px;
 }
 .node-head strong {
   font-size: 18px;
+}
+.node-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.node-role {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.3;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.node-role-leader {
+  color: var(--green);
+  border-color: var(--green);
+  background: #17372f;
+}
+.node-role-replica {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: #1a2e47;
+}
+.node-role-unknown {
+  color: var(--muted);
 }
 .dot {
   display: inline-block;

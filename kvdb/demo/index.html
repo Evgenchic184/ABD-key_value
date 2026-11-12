@@ -39,8 +39,11 @@
       <section class="box manual-box">
         <h2>Запрос к базе</h2>
         <div class="manual-form">
-          <select id="manual-node" aria-label="Узел запроса">
-            <option value="leader">leader</option></select
+          <select id="manual-target" aria-label="Способ адресации">
+            <option value="leader">По роли — текущий лидер</option>
+            <option value="node">По имени контейнера</option>
+          </select>
+          <select id="manual-node" aria-label="Имя контейнера" hidden></select
           ><input
             id="manual-key"
             aria-label="Ключ"
@@ -55,6 +58,7 @@
           ><button data-method="GET">GET</button
           ><button data-method="DELETE">DELETE</button>
         </div>
+        <div id="manual-route" class="meta muted" role="status"></div>
         <div id="manual-result" class="meta muted" role="status">
           Значения вводятся и отображаются как текст; API базы по-прежнему
           использует Base64.
@@ -97,8 +101,8 @@
             Постоянный ключ не удаляется пользователями.
           </div>
           <p class="meta muted">
-            Запись идёт только на leader. Чтение — с реплик по кругу, затем с
-            leader при отказе реплик.
+            Нагрузка пишет текущему лидеру по роли. Чтение — с реплик по кругу,
+            затем с текущего лидера при отказе реплик.
           </p>
           <div class="meta" id="transfers"></div>
         </div>
@@ -125,7 +129,7 @@
               <tr>
                 <th>Время</th>
                 <th>Пользователь</th>
-                <th>Узел</th>
+                <th>Адресация → контейнер</th>
                 <th>Операция</th>
                 <th>Ключ</th>
                 <th>Статус</th>

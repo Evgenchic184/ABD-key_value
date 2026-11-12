@@ -58,10 +58,20 @@ def create_app(data_dir: Path, config: ReplicationConfig | None = None) -> FastA
             if config.role == "standalone":
                 engine = KVEngine(storage, wal)
             else:
-                engine = ReplicatedEngine(storage, wal, role=config.role, group_id=config.group_id)
+                initial_role = config.role
+                if config.zookeeper_hosts and storage.path.exists():
+                    initial_role = "replica"
+                engine = ReplicatedEngine(storage, wal, role=initial_role, group_id=config.group_id)
             app.state.engine = engine
             app.state.worker = None
-            if config.role == "replica":
+            if config.zookeeper_hosts:
+                from kvdb.replication.coordinator import ZooKeeperCoordinator
+
+                engine.set_role("replica")
+                worker = ZooKeeperCoordinator(engine, config)
+                app.state.worker = worker
+                worker.start()
+            elif config.role == "replica":
                 worker = ReplicationWorker(engine, config)
                 app.state.worker = worker
                 worker.start()
@@ -108,16 +118,28 @@ def create_app(data_dir: Path, config: ReplicationConfig | None = None) -> FastA
 
     @app.post("/internal/replication/{action}")
     def replication_control(action: str, request: Request):
-        if config.role != "replica":
+        if getattr(request.app.state.engine, "role", config.role) != "replica":
             raise HTTPException(403, "Only replicas have a synchronization worker")
         if action not in ("pause", "resume"):
             raise HTTPException(404, "Unknown replication action")
-        return request.app.state.worker.set_paused(action == "pause")
+        try:
+            return request.app.state.worker.set_paused(action == "pause")
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     def leader_engine(request: Request):
-        if config.role != "leader":
+        if getattr(request.app.state.engine, "role", config.role) != "leader":
             raise HTTPException(status_code=403, detail="Only the leader serves replication")
-        return request.app.state.engine
+        engine = request.app.state.engine
+        if engine.authorize:
+            engine.authorize()
+        return engine
+
+    @app.get("/internal/replication/local-snapshot")
+    def local_snapshot(request: Request):
+        if not config.zookeeper_hosts:
+            raise HTTPException(403, "Peer snapshots require ZooKeeper mode")
+        return request.app.state.engine.export_snapshot()
 
     @app.get("/internal/replication/status")
     def internal_status(engine=Depends(leader_engine)):

@@ -79,39 +79,64 @@ class Demo:
                     text = " value=" + repr(base64.b64decode(raw_value, validate=True).decode("utf-8"))
                 except (ValueError, UnicodeError):
                     text = " value=<binary>"
-            logger.info("%s %-9s %-8s %-6s %s%s → %s (%.1f ms)%s",
-                        event["time"], event.get("user", ""), event["node"], event["method"],
+            logger.info("%s %-9s %s → %-8s %-6s %s%s → %s (%.1f ms)%s",
+                        event["time"], event.get("user", ""), event.get("target", "node"), event["node"], event["method"],
                         event["key"], text, event["status"] or "NETWORK", event["duration_ms"],
                         " UNKNOWN" if event["outcome"] == "unknown" else "")
         else:
             logger.info("%s %s %s", event["time"], event.get("node", "system"), event.get("message", ""))
         return event
 
-    def request(self, node, method, key, *, value=None, user="control"):
+    def leader_name(self):
+        with self.condition:
+            candidates = [(info.get("epoch", 0), name) for name, info in self.node_status.items()
+                          if info.get("available") and info.get("role") == "leader"
+                          and info.get("writable", True)]
+            managed = any("coordination" in info for info in self.node_status.values())
+        if candidates:
+            return max(candidates)[1]
+        return None if managed else next(iter(self.nodes))
+
+    def leader_url(self):
+        return self.nodes[self.leader_name() or next(iter(self.nodes))]
+
+    def request(self, node, method, key, *, value=None, user="control", target="node"):
+        if target == "leader":
+            node = self.leader_name()
         started = time.monotonic()
         status, body, error = None, None, None
-        try:
-            response = self.client.request(method, self.nodes[node] + "/kv/" + quote(key, safe=""),
-                                           **({"json": {"value": value}} if method == "PUT" else {}))
-            status = response.status_code
+        url = self.nodes.get(node)
+        with self.condition:
+            node_role = self.node_status.get(node, {}).get("role")
+        if url is None:
+            status, body = 503, {"detail": "Текущий лидер ещё не определён"}
+        else:
             try:
-                body = response.json()
-            except ValueError:
-                body = {"detail": response.text[:300]}
-        except httpx.HTTPError as exc:
-            error = f"{type(exc).__name__}: {exc}"
+                response = self.client.request(method, url + "/kv/" + quote(key, safe=""),
+                                               **({"json": {"value": value}} if method == "PUT" else {}))
+                status = response.status_code
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = {"detail": response.text[:300]}
+            except httpx.HTTPError as exc:
+                error = f"{type(exc).__name__}: {exc}"
         ok = status == 200 or (method == "GET" and status == 404)
         outcome = "confirmed" if ok else "unknown" if method != "GET" and (status is None or status >= 500) else "failed"
-        return self.emit(kind="request", user=user, node=node, method=method, key=key,
-                         status=status, ok=ok, outcome=outcome, body=body, error=error, sent_value=value,
+        if url is None:
+            outcome = "failed"
+        return self.emit(kind="request", user=user, node=node, target=target, node_role=node_role,
+                         url=url, method=method, key=key, status=status, ok=ok, outcome=outcome,
+                         body=body, error=error, sent_value=value,
                          duration_ms=round((time.monotonic() - started) * 1000, 1))
 
     def read(self, key, user):
-        replicas = [name for name in self.nodes if name != "leader"]
+        leader = self.leader_name() or next(iter(self.nodes))
+        replicas = [name for name in self.nodes if name != leader]
         with self.condition:
-            index = self.rotation % len(replicas)
+            index = self.rotation % max(1, len(replicas))
             self.rotation += 1
-        ordered = replicas[index:] + replicas[:index] + ["leader"]
+        ordered = replicas[index:] + replicas[:index] + [leader]
         result = None
         for name in ordered:
             result = self.request(name, "GET", key, user=user)
@@ -121,8 +146,8 @@ class Demo:
 
     def bootstrap(self):
         while not self.stop.is_set():
-            result = self.request("leader", "PUT", self.control_key,
-                                  value=self.control_value, user="bootstrap")
+            result = self.request(None, "PUT", self.control_key,
+                                  value=self.control_value, user="bootstrap", target="leader")
             if result["status"] == 200:
                 break
             self.stop.wait(1)
@@ -149,7 +174,7 @@ class Demo:
             if self.stop.is_set():
                 return
             try:
-                response = self.client.get(self.nodes["leader"] + "/kv/" + key)
+                response = self.client.get(self.leader_url() + "/kv/" + key)
                 if response.status_code != 404:
                     response.raise_for_status()
                     cycle = max(0, int(base64.b64decode(response.json()["value"]).decode()))
@@ -175,7 +200,7 @@ class Demo:
                     if method == "GET":
                         self.read(operation_key, f"user-{number}")
                     else:
-                        self.request("leader", method, operation_key, value=value, user=f"user-{number}")
+                        self.request(None, method, operation_key, value=value, user=f"user-{number}", target="leader")
                 finally:
                     with self.condition:
                         self.active -= 1
@@ -215,6 +240,9 @@ class Demo:
                     self.node_status[name] = raw
                     self.values[name] = observed
                     self.history[name].append({"time": time.time(), "seq": raw["last_seq"]})
+                if previous.get("role") != raw.get("role") or previous.get("epoch") != raw.get("epoch"):
+                    self.emit(kind="election", node=name,
+                              message=f"Role {raw.get('role')}, epoch {raw.get('epoch', 0)}, leader {raw.get('leader_id', 'static')}")
                 if not previous.get("available"):
                     self.emit(kind="node", node=name, message="Node connected")
             except (httpx.HTTPError, ValueError) as exc:
@@ -228,16 +256,19 @@ class Demo:
 
     def state(self, after=0):
         with self.condition:
-            leader = self.node_status.get("leader", {})
+            leader_name = self.leader_name()
+            leader = self.node_status.get(leader_name, {})
             nodes = {}
             for name, info in self.node_status.items():
                 info = info.copy()
-                info["display_lag_stale"] = not leader.get("available") or not info.get("available")
+                same_epoch = info.get("epoch", 0) == leader.get("epoch", 0)
+                info["epoch_mismatch"] = not same_epoch
+                info["display_lag_stale"] = not leader.get("available") or not info.get("available") or not same_epoch
                 seq = leader.get("last_seq")
-                info["display_lag"] = max(0, seq - info["last_seq"]) if seq is not None and "last_seq" in info else None
+                info["display_lag"] = max(0, seq - info["last_seq"]) if same_epoch and seq is not None and "last_seq" in info else None
                 nodes[name] = info
-            return {"run_id": self.run_id, "running": self.running, "initialized": self.initialized,
-                    "active": self.active, "nodes": nodes, "counters": dict(self.counter),
+            return {"leader_node": leader_name, "run_id": self.run_id, "running": self.running, "initialized": self.initialized,
+                    "active": self.active, "nodes": nodes, "node_urls": self.nodes.copy(), "counters": dict(self.counter),
                     "events": [event for event in self.events if event["id"] > after],
                     "cursor": self.cursor, "history": {n: list(h) for n, h in self.history.items()},
                     "events_truncated": bool(self.events and after and after < self.events[0]["id"] - 1),
@@ -256,21 +287,25 @@ class Demo:
         self.emit(kind="system", message="Workload started" if running else "Workload paused")
 
     def flush(self):
-        response = self.client.post(self.nodes["leader"] + "/flush")
-        self.emit(kind="system", node="leader", message="Leader flush", status=response.status_code)
+        node = self.leader_name()
+        if node is None:
+            raise ValueError("Текущий лидер ещё не определён")
+        response = self.client.post(self.nodes[node] + "/flush")
+        self.emit(kind="system", node=node, message="Leader flush", status=response.status_code)
         response.raise_for_status()
         return response.json()
 
     def replication_control(self, node, action):
-        if node not in self.nodes or node == "leader" or action not in ("pause", "resume"):
+        if node not in self.nodes or node == self.leader_name() or action not in ("pause", "resume"):
             raise ValueError("choose a configured replica and pause/resume")
         response = self.client.post(self.nodes[node] + "/internal/replication/" + action, timeout=30)
         response.raise_for_status()
         self.emit(kind="system", node=node, message=f"Synchronization {action}")
         return response.json()
 
-    def manual(self, node, method, key, value):
-        if node not in self.nodes or method not in ("GET", "PUT", "DELETE"):
+    def manual(self, node, method, key, value, *, target="node"):
+        if (target not in ("node", "leader") or (target == "node" and node not in self.nodes)
+                or method not in ("GET", "PUT", "DELETE")):
             raise ValueError("invalid node or method")
         with self.condition:
             if self.verification["state"] == "running":
@@ -279,7 +314,7 @@ class Demo:
             self.touched.add(key)
         try:
             encoded = base64.b64encode(value.encode("utf-8")).decode() if method == "PUT" else None
-            return self.request(node, method, key, value=encoded, user="manual")
+            return self.request(node, method, key, value=encoded, user="manual", target=target)
         finally:
             with self.condition:
                 self.active -= 1
@@ -305,10 +340,11 @@ class Demo:
                         raise ValueError("in-flight requests did not finish")
                     self.condition.wait(min(remaining, 0.2))
                 keys = sorted(self.touched)
-            snapshot = self.client.get(self.nodes["leader"] + "/internal/replication/snapshot")
+            snapshot = self.client.get(self.leader_url() + "/internal/replication/snapshot")
             snapshot.raise_for_status()
             snapshot = snapshot.json()
             target = snapshot["last_seq"]
+            epoch = snapshot.get("epoch", 0)
             with self.condition:
                 self.verification["message"] = f"Waiting for seq {target}"
                 self.verification["target_seq"] = target
@@ -322,7 +358,8 @@ class Demo:
                         response.raise_for_status()
                         status = response.json()
                         positions.append(status.get("last_seq") == target and status.get("ready")
-                                         and status.get("group_id") == snapshot["group_id"])
+                                         and status.get("group_id") == snapshot["group_id"]
+                                         and status.get("epoch", 0) == epoch)
                     if all(positions):
                         break
                 except httpx.HTTPError:
@@ -343,7 +380,8 @@ class Demo:
                         raise ValueError(f"{name}: value mismatch: {key}")
                 response = self.client.get(url + "/replication/status")
                 response.raise_for_status()
-                if response.json()["last_seq"] != target:
+                final = response.json()
+                if final["last_seq"] != target or final.get("epoch", 0) != epoch:
                     raise ValueError("external writes changed the verification position")
 
             if snapshot["data"].get(self.control_key) != self.control_value:

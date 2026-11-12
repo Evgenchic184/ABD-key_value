@@ -15,6 +15,7 @@ class ReplicatedEngine(KVEngine):
         self._write_lock, self._state_lock = RLock(), RLock()
         self._closed = self._failed = False
         self.role, self.group_id = role, group_id
+        self.authorize = None
         if storage.path.exists():
             state = storage.load_state()
             if state.group_id != group_id:
@@ -27,12 +28,17 @@ class ReplicatedEngine(KVEngine):
                 raise ValueError("cluster requires a new directory or a v2 snapshot")
             state = SnapshotState(group_id, 0, role == "leader", {})
             storage.save_state(state)
+        self.epoch = state.epoch
         self._data = state.data.copy()
         self.last_seq, self.initialized = state.last_seq, state.initialized
         self.checkpoint_seq = state.last_seq
         previous = None
         for record in wal.replay():
             operation = Operation.parse(json.loads(record.decode("utf-8")))
+            if operation.epoch < self.epoch:
+                continue
+            if operation.epoch > self.epoch:
+                raise ValueError("WAL epoch is ahead of the snapshot")
             if previous is not None and operation.seq != previous + 1:
                 raise ValueError("WAL sequence is not contiguous")
             previous = operation.seq
@@ -70,8 +76,12 @@ class ReplicatedEngine(KVEngine):
                 self._validate_key(key)
                 if op == "set" and not isinstance(value, bytes):
                     raise TypeError("Value must be bytes")
-                operation = Operation(self.last_seq + 1, op, key, value)
+                operation = Operation(self.last_seq + 1, op, key, value, self.epoch)
+            if self.authorize:
+                self.authorize()
             self._persist(operation)
+            if self.authorize:
+                self.authorize()
 
     def _persist(self, operation):
         try:
@@ -88,13 +98,15 @@ class ReplicatedEngine(KVEngine):
     def delete(self, key):
         self._mutate("delete", key)
 
-    def apply_replication(self, raw):
+    def apply_replication(self, raw, *, epoch=None):
         operation = Operation.parse(raw)
         with self._write_lock:
             with self._state_lock:
                 self._ready()
                 if self.role != "replica":
                     raise ValueError("only replicas apply remote operations")
+                if operation.epoch != self.epoch or (epoch is not None and epoch != self.epoch):
+                    raise ReplicationConflict("epoch_mismatch")
                 if operation.seq <= self.last_seq:
                     return
                 if operation.seq != self.last_seq + 1:
@@ -104,11 +116,11 @@ class ReplicatedEngine(KVEngine):
     def status(self):
         with self._state_lock:
             return {"role": self.role, "group_id": self.group_id,
-                    "last_seq": self.last_seq, "checkpoint_seq": self.checkpoint_seq,
+                    "last_seq": self.last_seq, "checkpoint_seq": self.checkpoint_seq, "epoch": self.epoch,
                     "ready": self.initialized and not self._failed and not self._closed}
 
     def _snapshot(self):
-        return SnapshotState(self.group_id, self.last_seq, self.initialized, self._data.copy())
+        return SnapshotState(self.group_id, self.last_seq, self.initialized, self._data.copy(), self.epoch)
 
     def export_snapshot(self):
         with self._state_lock:
@@ -116,15 +128,16 @@ class ReplicatedEngine(KVEngine):
             state = self._snapshot()
         return state.wire()
 
-    def install_snapshot(self, raw):
+    def install_snapshot(self, raw, *, allow_new_epoch=False):
         state = SnapshotState.parse(raw)
         with self._write_lock:
             with self._state_lock:
                 self._check()
                 if self.role != "replica" or state.group_id != self.group_id:
                     raise ValueError("snapshot group or role mismatch")
-                if not state.initialized or state.last_seq < self.last_seq:
-                    raise ValueError("snapshot is uninitialized or would roll back data")
+                newer = allow_new_epoch and state.epoch > self.epoch
+                if state.epoch < self.epoch or not state.initialized or (state.last_seq < self.last_seq and not newer):
+                    raise ValueError("snapshot is uninitialized or would roll back its epoch")
             try:
                 self._storage.save_state(state)
                 self._wal.clear()
@@ -132,9 +145,28 @@ class ReplicatedEngine(KVEngine):
                     self._data = state.data.copy()
                     self.last_seq = self.checkpoint_seq = state.last_seq
                     self.initialized = True
+                    self.epoch = state.epoch
             except BaseException:
                 self._mark_failed()
                 raise
+
+    def set_role(self, role):
+        with self._write_lock:
+            with self._state_lock:
+                self._check()
+                self.role = role
+
+    def promote(self, epoch):
+        # Persist the epoch before accepting writes in this leadership period.
+        with self._write_lock:
+            with self._state_lock:
+                self._ready()
+                if epoch <= self.epoch:
+                    raise ValueError("ZooKeeper epoch must exceed the persisted epoch")
+                self.epoch = epoch
+            self.flush()
+            with self._state_lock:
+                self.role = "leader"
 
     def changes(self, after: int, limit: int):
         with self._write_lock:
@@ -148,7 +180,7 @@ class ReplicatedEngine(KVEngine):
             operations = []
             for record in self._wal.replay():
                 operation = Operation.parse(json.loads(record.decode("utf-8")))
-                if operation.seq > after:
+                if operation.epoch == self.epoch and operation.seq > after:
                     operations.append(operation.wire())
                     if len(operations) == limit:
                         break

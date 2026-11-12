@@ -11,24 +11,41 @@ x-node: &node
     start_period: 5s
 
 services:
-  leader:
+  zookeeper:
+    image: zookeeper:3.9.4
+    restart: unless-stopped
+    environment:
+      ZOO_TICK_TIME: 1000
+      ZOO_MIN_SESSION_TIMEOUT: 2000
+      ZOO_MAX_SESSION_TIMEOUT: 20000
+      ZOO_4LW_COMMANDS_WHITELIST: ruok
+    volumes: ["zookeeper-data:/data", "zookeeper-log:/datalog"]
+    healthcheck:
+      test: ["CMD-SHELL", "zkServer.sh status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  node1:
     <<: *node
-    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "leader", "--group-id", "lab4"]
+    container_name: node1
+    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "leader", "--group-id", "lab4", "--zookeeper-hosts", "zookeeper:2181", "--node-id", "node1", "--advertise-url", "http://node1:8000"]
     ports: ["127.0.0.1:8000:8000"]
     volumes: ["leader-data:/data"]
-  replica1:
+  node2:
     <<: *node
-    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "replica", "--group-id", "lab4", "--leader-url", "http://leader:8000"]
+    container_name: node2
+    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "replica", "--group-id", "lab4", "--zookeeper-hosts", "zookeeper:2181", "--node-id", "node2", "--advertise-url", "http://node2:8000"]
     ports: ["127.0.0.1:8001:8000"]
     volumes: ["replica1-data:/data"]
-  replica2:
+  node3:
     <<: *node
-    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "replica", "--group-id", "lab4", "--leader-url", "http://leader:8000"]
+    container_name: node3
+    command: ["python", "-m", "kvdb.http", "--host", "0.0.0.0", "--data-dir", "/data", "--role", "replica", "--group-id", "lab4", "--zookeeper-hosts", "zookeeper:2181", "--node-id", "node3", "--advertise-url", "http://node3:8000"]
     ports: ["127.0.0.1:8002:8000"]
     volumes: ["replica2-data:/data"]
   web:
     <<: *node
-    command: ["python", "-m", "kvdb.web", "--host", "0.0.0.0", "--leader-url", "http://leader:8000", "--replica-urls", "http://replica1:8000", "http://replica2:8000"]
+    command: ["python", "-m", "kvdb.web", "--host", "0.0.0.0", "--nodes", "node1=http://node1:8000", "node2=http://node2:8000", "node3=http://node3:8000"]
     ports: ["127.0.0.1:8080:8080"]
     volumes: ["./reports/demo:/app/reports/demo"]
     healthcheck:
@@ -37,7 +54,10 @@ services:
       timeout: 3s
       retries: 3
 
+# Legacy volume names preserve the existing node data when services are renamed.
 volumes:
   leader-data:
   replica1-data:
   replica2-data:
+  zookeeper-data:
+  zookeeper-log:
